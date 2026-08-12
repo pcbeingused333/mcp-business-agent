@@ -138,12 +138,18 @@ def test_the_prompt_states_todays_date_and_weekday():
     assert "2026-09-01" in prompt and "Tuesday" in prompt
 
 
-def test_the_agent_is_told_not_to_refuse_before_calling_a_tool():
+def test_the_agent_is_told_not_to_claim_ignorance_before_calling_a_tool():
     """
-    Regression: the sibling RAG project's agent refused an ordinary customer
-    question as off-topic without ever searching.
+    Regression, caught by the trajectory eval rather than by reading traces.
+
+    Asked "Are you on Uber Eats?" the agent replied "I don't have that
+    information available in our system" with zero tool calls. The earlier
+    wording only forbade refusing as *off-topic*, which the model did not read
+    as covering a claim of ignorance — so the rule now names that directly.
     """
-    assert "off-topic" in graph.build_system_prompt().lower()
+    prompt = graph.build_system_prompt().lower()
+    assert "never say you lack the information" in prompt
+    assert "only reach after looking" in prompt
 
 
 def test_the_agent_is_told_not_to_do_arithmetic():

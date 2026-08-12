@@ -12,8 +12,7 @@ its clients.
 A LangGraph agent ships with it as one client, so you can see the tools drive a real
 multi-step conversation.
 
-> Status: server, rules, agent, and tests are done. Trajectory evals and a hosted
-> demo are next — see Roadmap.
+> Status: server, rules, agent, trajectory evals, and a Streamlit demo are done.
 
 ## Quick start
 
@@ -104,6 +103,95 @@ derived value, that beats instructing the model not to get it wrong.**
 
 Each has a regression test in `tests/test_agent.py`.
 
+## Trajectory evaluation
+
+```bash
+python -m evals.run_eval                          # 12 scenarios
+python -m evals.run_eval --only spanish --repeat 6  # measure a flaky one
+python -m evals.run_eval --json out.json
+```
+
+Answer-level scoring is not enough for an agent. A reply can be right by luck —
+priced from memory, correct that time — and wrong in a way no reader notices, like
+a confident weekday that does not match the date. Both happened here, and neither
+would fail a final-answer check.
+
+So the harness scores the **trajectory**: which tools were called, in what order,
+with which arguments, and whether every figure in the answer traces back to something
+a tool returned.
+
+| Check | Catches |
+|---|---|
+| `no-lookup` | Answering a question about live data with zero tool calls |
+| `missing-tool` / `any_of_tools` | Skipping a lookup the answer depends on |
+| `forbidden-tool` | Writing to the schedule when only asked a question |
+| `order` | `place_order` before `quote_catering` |
+| `arguments` | Resolving "this Saturday" to the wrong date, wrong headcount |
+| `ungrounded-money` | A price no tool ever returned |
+| `ungrounded-count` | A computed figure — the "5 servings short" bug |
+| `missing-content` / `forbidden-content` | Reporting a closed day as "fully booked" |
+
+**The grounding checks are the interesting ones, and they need no judge model.** Pull
+every figure out of the answer; check it appears in a tool result, in the question, or
+in the arguments the agent itself sent. Deterministic, free, no drift — and it stays
+correct when an invented number happens to be right, because the question is whether
+the agent *looked it up*.
+
+### Results
+
+12 scenarios, `openai/gpt-oss-120b`: **11/12 passed, mean score 0.98**.
+
+The one failure was real and worth the whole exercise. Asked *"Are you on Uber Eats or
+DoorDash?"* the agent replied **"I don't have that information available in our
+system" with zero tool calls** — the same class of bug as the sibling RAG project's
+off-topic refusal. The prompt already forbade refusing as *off-topic*; the model did
+not read that as covering a claim of ignorance, so the rule now names it directly:
+*not knowing is a conclusion you may only reach after looking.*
+
+It is also **intermittent** — the same scenario passed on the previous run. That is
+why `--repeat` exists: a single pass measures a sample of one, and flaky agent
+behaviour is exactly what gets written down as "works" after one lucky run.
+
+> **Honest gap:** the post-fix rate on that scenario is unmeasured. The Groq free tier
+> has a 200k-token daily cap and this session hit it. The fix has a regression test on
+> the prompt text; the behavioural confirmation is still owed.
+
+### The scorer was wrong four times before it was right
+
+Worth stating plainly, because an eval that is wrong is worse than no eval — it
+produces numbers that look authoritative and are not. Every one of these marked a
+*correct* agent answer as a fabrication:
+
+| False positive | Cause |
+|---|---|
+| `2026`, `9`, `19` reported as invented, in 10 of 12 scenarios | Models write dates with typographic hyphens (`2026‑09‑19`, U+2011), which the ISO pattern missed |
+| `40` and `250` reported as invented although the tools returned them | A lookahead rejecting a following comma skipped every number in a JSON result (`"on_hand": 40,`) |
+| `19` in the Spanish scenario | "el sábado 19 de septiembre" repeats a date the tool returned; stripping ISO dates does not cover long-form renderings |
+| `3` in a numbered list of options | A list marker is presentation, not a quantity |
+
+Each has a regression test in `tests/test_evals.py`. The first draft of this harness
+reported **2/12 passing**; almost all of that was the scorer, not the agent.
+
+## Live demo
+
+```bash
+streamlit run app.py
+```
+
+The agent with its tool trajectory rendered next to every answer — which tools it
+reached for, with what arguments, and what came back. A chat window that answers
+correctly proves nothing about an agent; the trajectory is the demonstration.
+
+Self-contained on purpose: SQLite seeded on first boot, no external database, no
+embedding model, one API key. A demo whose database can pause is a demo that is dead
+exactly when someone opens it.
+
+To deploy on Streamlit Community Cloud, point it at `app.py` and set one secret:
+
+```toml
+GROQ_API_KEY = "gsk_..."
+```
+
 ## Three decisions worth explaining
 
 ### Every blocker is returned at once, not the first one
@@ -151,7 +239,13 @@ agent/
   bridge.py     MCP tools -> LangChain tools (see "Not langchain-mcp-adapters")
   graph.py      The ReAct agent and its operating instructions
   cli.py        Ask it things; --trace shows the tool trajectory
-tests/          82 tests, no network and no LLM required
+evals/
+  dataset.py    12 scenarios with the trajectory each should produce
+  trajectory.py Scoring — pure functions, no LLM, no network
+  score.py      Applying a scenario's expectations to a run
+  run_eval.py   The runner
+app.py          Streamlit demo, tool trajectory shown per answer
+tests/          111 tests, no network and no LLM required
 ```
 
 `ops` has no MCP import and `rules` has no database import. The decision to accept an
@@ -166,7 +260,7 @@ one failed; `test_a_refused_booking_leaves_no_order_behind` guards it.
 ## Tests
 
 ```bash
-pytest -q      # 82 tests, ~1.5s
+pytest -q      # 111 tests, ~1.5s
 ```
 
 No API key, no network, no running server. Tool tests go through
@@ -176,9 +270,10 @@ called directly and fails over the protocol is still broken.
 
 ## Roadmap
 
-- An evaluation harness scoring **tool trajectories** — did the agent call the right
-  tools, in the right order, with the right arguments — not just the final answer
-- A one-click hosted demo
+- Confirm the no-lookup fix behaviourally (blocked on the Groq daily token cap)
+- More scenarios around multi-turn bookings, where the agent has to carry a quote
+  across turns before writing
+- Deploy the demo
 
 ## Licence
 
