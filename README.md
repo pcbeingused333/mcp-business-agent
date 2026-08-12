@@ -279,7 +279,7 @@ evals/
   run_eval.py   The runner
 infra/          Terraform for the AWS deployment, and deploy.sh
 app.py          Streamlit demo, tool trajectory shown per answer
-tests/          157 tests, no network and no LLM required
+tests/          161 tests, no network and no LLM required
 ```
 
 `ops` has no MCP import and `rules` has no database import. The decision to accept an
@@ -328,9 +328,17 @@ exists.
 
 ```bash
 cd infra
+./bootstrap-state.sh # once per account: the S3 bucket holding Terraform state
 ./deploy.sh          # build, push, apply, smoke test
 ./deploy.sh --seed   # ...and repopulate the business (destructive)
 ```
+
+State lives in S3, not on a laptop. Local state means the record of what exists
+in AWS has exactly one copy: lose it and Terraform knows about none of the
+resources it created, so the next apply tries to build a second copy of
+everything, fails on the names already taken, and leaves the originals running
+and unmanaged. The bucket is versioned and bootstrapped by hand, because a
+configuration cannot create the bucket its own backend needs in order to run.
 
 Two ordering constraints shape that script, and neither is obvious from the
 Terraform alone.
@@ -350,7 +358,7 @@ accepting any Host, so a half-finished deploy fails closed.
 ### What only the real deploy could catch
 
 The image was run under the AWS Runtime Interface Emulator against the real
-table before any of this — which the 157 tests against moto cannot do. It proved
+table before any of this — which the 161 tests against moto cannot do. It proved
 the image starts, the handler works under the actual runtime, and boto3 reaches
 DynamoDB.
 
@@ -385,6 +393,14 @@ does: Mangum re-runs the ASGI lifespan on every invocation and MCP's session
 manager refuses to start twice, so that failure only appears from the second
 request into a warm container.
 
+It also fetches `/` in a browser's shape. That URL returned a bare 502 for a
+while and nothing failed, because the protocol was healthy and no check looked:
+MCP treats GET as a request to open an SSE stream and a Function URL in buffered
+mode cannot stream one. A small ASGI wrapper now answers GET on `/` with a page
+explaining what the endpoint is, and GET on `/mcp` with a 405 saying to POST.
+Both are the difference between "this speaks a protocol" and "this is broken",
+to a reader who cannot tell the two apart.
+
 ### Cost
 
 Free tier covers it: a million Lambda requests a month, 25 GB of DynamoDB. The
@@ -397,7 +413,7 @@ invocations are still billable.
 ## Tests
 
 ```bash
-pytest -q      # 157 tests, ~6s
+pytest -q      # 161 tests, ~7s
 ```
 
 No API key, no network, no running server. Tool tests go through

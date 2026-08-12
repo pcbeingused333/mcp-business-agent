@@ -66,6 +66,88 @@ _app = srv.server.streamable_http_app(
     ),
 )
 
+_MCP_PATH = os.environ.get("MCP_PATH", "/mcp")
+
+_INDEX = """<!doctype html>
+<meta charset="utf-8">
+<title>Business Operations MCP Server</title>
+<style>
+  body {{ font: 16px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+         max-width: 46rem; margin: 4rem auto; padding: 0 1.5rem;
+         color: #1c1917; background: #fafaf9; }}
+  pre {{ background: #f5f5f4; padding: 1rem; overflow-x: auto;
+        border-left: 3px solid #9a3412; }}
+  a {{ color: #9a3412; }}
+  .m {{ color: #78716c; }}
+</style>
+<h1>Business Operations MCP Server</h1>
+<p>A <a href="https://modelcontextprotocol.io">Model Context Protocol</a> server
+exposing a small food business's operations — catalog, booking capacity, stock,
+catering quotes and orders — as tools any MCP client can call.</p>
+<p class="m">Running on AWS Lambda. This page is the only thing here that answers
+a GET; the protocol itself speaks POST.</p>
+<pre>curl -s -X POST {endpoint} \\
+  -H 'Content-Type: application/json' \\
+  -H 'Accept: application/json, text/event-stream' \\
+  -d '{{"jsonrpc":"2.0","id":1,"method":"tools/list"}}'</pre>
+<p><a href="https://github.com/pcbeingused333/mcp-business-agent">Source and
+write-up on GitHub</a></p>
+"""
+
+
+class Landing:
+    """
+    Answers GETs so the public URL is not a dead end in a browser.
+
+    The endpoint is the headline link in the README, and pasting it into a
+    browser used to return a bare 502: MCP's streamable transport treats GET as
+    a request to open an SSE stream, and the Function URL runs in buffered mode
+    where nothing can stream. It looks exactly like a broken deployment.
+
+    GET / serves a page explaining what the URL is and how to call it. GET on
+    the MCP path answers 405 with the same hint, which is the honest status and
+    beats a gateway error nobody can act on. Everything else — every POST, and
+    so the entire protocol — goes straight through untouched.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope.get("method") != "GET":
+            return await self.app(scope, receive, send)
+
+        path = scope.get("path", "/")
+        if path not in ("/", _MCP_PATH):
+            return await self.app(scope, receive, send)
+
+        host = dict(
+            (k.decode("latin-1").lower(), v.decode("latin-1"))
+            for k, v in scope.get("headers", [])
+        ).get("host", "")
+        endpoint = f"https://{host}{_MCP_PATH}" if host else _MCP_PATH
+
+        if path == "/":
+            status, ctype = 200, "text/html; charset=utf-8"
+            body = _INDEX.format(endpoint=endpoint).encode()
+        else:
+            status, ctype = 405, "application/json"
+            body = json.dumps({
+                "error": "This endpoint speaks MCP over POST.",
+                "hint": f"POST JSON-RPC to {endpoint}, or open / for an example.",
+            }).encode()
+
+        await send({
+            "type": "http.response.start",
+            "status": status,
+            "headers": [
+                (b"content-type", ctype.encode()),
+                (b"content-length", str(len(body)).encode()),
+            ],
+        })
+        await send({"type": "http.response.body", "body": body})
+
+
 class RunLifespanOnce:
     """
     ASGI wrapper that lets the lifespan run exactly once per container.
@@ -117,7 +199,7 @@ class RunLifespanOnce:
 try:
     from mangum import Mangum
 
-    _asgi = Mangum(RunLifespanOnce(_app), lifespan="auto")
+    _asgi = Mangum(RunLifespanOnce(Landing(_app)), lifespan="auto")
 except ImportError:  # pragma: no cover - only in environments without mangum
     _asgi = None
 

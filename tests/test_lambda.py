@@ -111,3 +111,51 @@ def test_the_health_check_proves_the_table_is_reachable(lam):
 
 def test_an_unrecognised_event_is_explained(lam):
     assert "Unrecognised event" in lam.handler({"foo": 1}, None)["error"]
+
+
+HOST = "x.lambda-url.us-east-1.on.aws"
+
+
+def _get(module, path, host=HOST):
+    event = {
+        "version": "2.0", "rawPath": path, "rawQueryString": "",
+        "headers": {"host": host},
+        "requestContext": {"http": {"method": "GET", "path": path,
+                                    "protocol": "HTTP/1.1", "sourceIp": "1.2.3.4"},
+                           "requestId": "r", "stage": "x", "apiId": "a",
+                           "domainName": "d", "timeEpoch": 0, "accountId": "1"},
+        "isBase64Encoded": False,
+    }
+    return module.handler(event, None)
+
+
+def test_the_root_serves_a_page_instead_of_a_dead_end(lam):
+    """
+    The endpoint is the headline link in the README. A browser used to get a
+    bare 502 from it, which reads as a broken deployment rather than as "this
+    speaks POST".
+    """
+    response = _get(lam, "/")
+    assert response["statusCode"] == 200
+    assert "text/html" in response["headers"]["content-type"]
+    # The page has to show the URL it is actually served from, not a hardcoded
+    # one that goes stale the next time the function is recreated.
+    assert f"https://{HOST}/mcp" in response["body"]
+
+
+def test_a_get_on_the_mcp_path_is_405_not_a_gateway_error(lam):
+    response = _get(lam, "/mcp")
+    assert response["statusCode"] == 405
+    assert "POST" in json.loads(response["body"])["error"]
+
+
+def test_the_landing_page_does_not_shadow_the_protocol(lam):
+    """A GET handler that swallowed POSTs would break every tool call."""
+    status, payload = _post(lam, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+    assert status == 200
+    assert len(payload["result"]["tools"]) == 6
+
+
+def test_an_unknown_path_still_reaches_the_app(lam):
+    """Only / and the MCP path are intercepted; the rest is the app's to answer."""
+    assert _get(lam, "/nope")["statusCode"] == 404

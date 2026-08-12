@@ -110,3 +110,9 @@ jobs:
             echo "request $i: HTTP $code, $tools tools"
             [ "$code" = 200 ] && [ "$tools" -gt 0 ] || { cat body.json; exit 1; }
           done
+
+          # The URL in the README. It answered 502 in a browser for a while,
+          # and nothing failed — the protocol was fine and no check looked.
+          root=$(curl -s -o /dev/null -w '%{http_code}' "$URL")
+          echo "GET /: HTTP $root"
+          [ "$root" = 200 ] || exit 1

@@ -107,5 +107,11 @@ for i in 1 2 3; do
   [[ "$code" == "200" ]] || { echo "FAILED"; cat /tmp/mcp-smoke.json; exit 1; }
 done
 
+# The URL in the README. It answered 502 in a browser for a while, and nothing
+# failed — the protocol was fine and no check looked.
+ROOT="$(curl -s -o /dev/null -w '%{http_code}' "$(terraform output -raw function_url)")"
+echo "    GET /: HTTP ${ROOT}"
+[[ "$ROOT" == "200" ]] || { echo "FAILED"; exit 1; }
+
 echo
 echo "MCP endpoint: ${ENDPOINT}"
