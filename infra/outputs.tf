@@ -8,8 +8,8 @@ output "repository_url" {
 }
 
 output "image_uri" {
-  description = "Exact image the function is pinned to."
-  value       = local.image_uri
+  description = "The image actually deployed, which after a CI run is not the one var.image_tag names."
+  value       = aws_lambda_function.this.image_uri
 }
 
 output "function_name" {

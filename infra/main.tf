@@ -157,6 +157,18 @@ resource "aws_lambda_function" "this" {
     aws_iam_role_policy.lambda,
     aws_cloudwatch_log_group.lambda,
   ]
+
+  lifecycle {
+    # CI owns which image is deployed; Terraform owns everything else about the
+    # function. Without this they fight, and Terraform wins the wrong way round:
+    # the state still holds whatever tag the last local deploy used, so the next
+    # `terraform apply` — run to change a timeout, say — silently rolls
+    # production back to an older image. The plan even says so, in one line
+    # among thirty.
+    #
+    # image_uri here therefore only sets what the function is *created* with.
+    ignore_changes = [image_uri]
+  }
 }
 
 resource "aws_lambda_function_url" "this" {

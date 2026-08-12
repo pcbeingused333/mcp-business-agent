@@ -63,6 +63,17 @@ terraform apply -input=false -auto-approve -var "image_tag=${TAG}"
 
 HOST="$(terraform output -raw function_url_host)"
 echo "==> Second pass: ALLOWED_HOSTS=${HOST}"
+
+# Recorded so a later bare `terraform apply` — to change a timeout, say — does
+# not fall back to the empty default and take the server down with 421s. The
+# hostname is not a secret; it is the public endpoint.
+cat > terraform.tfvars <<EOF
+# Written by deploy.sh. The Function URL's hostname, fed back in from this
+# configuration's own output — see the allowed_hosts variable for why it cannot
+# be a direct reference.
+allowed_hosts = "${HOST}"
+EOF
+
 terraform apply -input=false -auto-approve \
   -var "image_tag=${TAG}" -var "allowed_hosts=${HOST}"
 
