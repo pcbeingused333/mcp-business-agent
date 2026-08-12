@@ -64,6 +64,19 @@ def _bad_day(day: str) -> Dict:
     }
 
 
+def _weekday(day: str) -> str:
+    """
+    The weekday name for an ISO date.
+
+    Returned alongside every date because a model asked to name the weekday
+    itself gets it wrong — observed: it called a Sunday "Saturday" while every
+    figure in the same answer was correct. Deriving it here costs nothing and
+    removes a whole class of confident, wrong statements, the same way returning
+    `total_cents` next to `total` removes mental arithmetic on money.
+    """
+    return date.fromisoformat(day).strftime("%A")
+
+
 @server.tool(
     name="list_catalog",
     description=(
@@ -114,12 +127,13 @@ def check_availability(day: str) -> Dict:
     capacity = store.capacity_for(parsed)
     if capacity is None:
         upcoming = [
-            {"day": c.day, "remaining": c.remaining}
+            {"day": c.day, "weekday": _weekday(c.day), "remaining": c.remaining}
             for c in store.open_days()
             if c.day > parsed and c.remaining > 0
         ][:3]
         return {
             "day": parsed,
+            "weekday": _weekday(parsed),
             "open": False,
             "reason": "The business is closed that day.",
             "next_open_days": upcoming,
@@ -127,6 +141,7 @@ def check_availability(day: str) -> Dict:
 
     return {
         "day": parsed,
+        "weekday": _weekday(parsed),
         "open": True,
         "max_servings": capacity.max_servings,
         "booked_servings": capacity.booked_servings,
@@ -241,7 +256,9 @@ def quote_catering(
         on_hand=on_hand,
         wants_delivery=delivery,
     )
-    return quote.as_dict()
+    result = quote.as_dict()
+    result["weekday"] = _weekday(parsed)
+    return result
 
 
 @server.tool(

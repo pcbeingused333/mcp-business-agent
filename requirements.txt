@@ -1,1 +1,4 @@
 mcp==2.0.0
+langgraph
+langchain-groq
+python-dotenv

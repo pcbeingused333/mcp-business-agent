@@ -9,8 +9,11 @@ project's own agent, without being rewritten per framework. That reusability is 
 argument for the protocol, so **the server is the artifact** and the agent is one of
 its clients.
 
-> Status: the server, domain rules, and test suite are done. The LangGraph agent and
-> the hosted demo are in progress — see Roadmap.
+A LangGraph agent ships with it as one client, so you can see the tools drive a real
+multi-step conversation.
+
+> Status: server, rules, agent, and tests are done. Trajectory evals and a hosted
+> demo are next — see Roadmap.
 
 ## Quick start
 
@@ -52,6 +55,55 @@ text rather than an action, which is exactly the distinction MCP resources exist
 Read-only tools carry `readOnlyHint`, so a client can auto-approve them and prompt
 only for `place_order` — the one call that changes the business's schedule.
 
+## The agent
+
+```bash
+cp .env.example .env          # add a free GROQ_API_KEY
+python -m agent.cli "Can you do catering for 80 people this Saturday? We'd want delivery."
+python -m agent.cli --trace   # same, but print every tool call and result
+python -m agent.cli           # interactive
+```
+
+A LangGraph ReAct loop (Groq, `openai/gpt-oss-120b`) over whatever tools the server
+advertises. It contains **no business rules** — it does not know the catering
+minimum, because `quote_catering` tells it. Add a tool to the server and the agent
+can use it with no change on the agent side; that property is the reason to build a
+server rather than a bag of framework-specific functions.
+
+### Not `langchain-mcp-adapters`
+
+That package is the obvious dependency and was the first choice. Version 0.3.2 pins
+`mcp<2`, so installing it downgrades the SDK from 2.0.0 to 1.29.0 — and this server
+is written against the 2.0 API (`MCPServer`, which does not exist in 1.x). Taking the
+adapter would mean rewriting a working, tested server against an older SDK to satisfy
+a client-side convenience wrapper.
+
+`agent/bridge.py` is the alternative, and it is short because MCP is a good protocol:
+a tool listing already carries a name, a description and a JSON Schema, and
+`langchain-core` accepts a raw JSON Schema as `args_schema`. The server's schema
+passes straight through — there is no hand-maintained pydantic mirror of each tool to
+drift out of sync. When the adapter supports mcp 2.x, the dependency becomes the
+better answer and that file should go.
+
+### Three agent bugs that only appeared when it ran
+
+Unit tests cover the tools. None of these would have failed one.
+
+| Symptom | Fix |
+|---|---|
+| Asked about 80 people on a day with 70 left, it reported the request was "**5 servings short**". It is 10. | Prompt: report the two numbers, never compute the difference |
+| It priced a 70-person alternative **from memory** instead of calling the tool. The figures happened to be right — this time. | Prompt: never price an option you have not looked up; suggest it and offer to check |
+| It called Sunday 2026‑08‑16 "**Saturday**" while every figure in the same answer was correct. | Tools: return a `weekday` field, so the model never derives one |
+
+The third is the interesting one, because the fix was not in the prompt. A model that
+has to *derive* a value will sometimes derive it wrong, confidently, in the middle of
+an otherwise correct answer. Returning `weekday` next to `day` costs nothing and
+removes the whole class — the same reasoning as returning `total_cents` next to
+`total` so it never does mental arithmetic on money. **Where a tool can hand over a
+derived value, that beats instructing the model not to get it wrong.**
+
+Each has a regression test in `tests/test_agent.py`.
+
 ## Three decisions worth explaining
 
 ### Every blocker is returned at once, not the first one
@@ -90,12 +142,16 @@ model has something to display and something to compute with.
 ## Architecture
 
 ```
-server.py     MCP adapter — tool definitions and argument handling, nothing else
+server.py       MCP adapter — tool definitions and argument handling, nothing else
 ops/
-  store.py    SQLite: catalog, stock, per-day capacity, orders
-  rules.py    Booking rules and quote maths — pure functions, no I/O, no clock
-  money.py    Integer-cent arithmetic
-tests/        55 tests, no network and no LLM required
+  store.py      SQLite: catalog, stock, per-day capacity, orders
+  rules.py      Booking rules and quote maths — pure functions, no I/O, no clock
+  money.py      Integer-cent arithmetic
+agent/
+  bridge.py     MCP tools -> LangChain tools (see "Not langchain-mcp-adapters")
+  graph.py      The ReAct agent and its operating instructions
+  cli.py        Ask it things; --trace shows the tool trajectory
+tests/          82 tests, no network and no LLM required
 ```
 
 `ops` has no MCP import and `rules` has no database import. The decision to accept an
@@ -110,7 +166,7 @@ one failed; `test_a_refused_booking_leaves_no_order_behind` guards it.
 ## Tests
 
 ```bash
-pytest -q      # 55 tests, ~1s
+pytest -q      # 82 tests, ~1.5s
 ```
 
 No API key, no network, no running server. Tool tests go through
@@ -120,8 +176,6 @@ called directly and fails over the protocol is still broken.
 
 ## Roadmap
 
-- A LangGraph agent that consumes this server over MCP and resolves multi-step
-  requests ("quote a catering job for 80 on Saturday and tell me if we have stock")
 - An evaluation harness scoring **tool trajectories** — did the agent call the right
   tools, in the right order, with the right arguments — not just the final answer
 - A one-click hosted demo
