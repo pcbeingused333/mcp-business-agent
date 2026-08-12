@@ -66,17 +66,58 @@ _app = srv.server.streamable_http_app(
     ),
 )
 
+class RunLifespanOnce:
+    """
+    ASGI wrapper that lets the lifespan run exactly once per container.
+
+    Mangum runs the ASGI lifespan on *every* invocation. MCP's
+    StreamableHTTPSessionManager refuses to start twice — "run() can only be
+    called once per instance" — so the first request in a warm container
+    succeeded and every later one failed. A single-request test cannot see it,
+    which is how it nearly shipped.
+
+    After the first startup this answers the lifespan protocol itself, so Mangum
+    is satisfied and the inner app is never asked to start again. Shutdown is
+    also swallowed: a Lambda container is frozen and eventually killed, never
+    gracefully drained, and forwarding a shutdown between invocations would tear
+    down the session manager the next request needs.
+    """
+
+    def __init__(self, app):
+        self.app = app
+        self.started = False
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "lifespan":
+            return await self.app(scope, receive, send)
+
+        if self.started:
+            while True:
+                message = await receive()
+                if message["type"] == "lifespan.startup":
+                    await send({"type": "lifespan.startup.complete"})
+                elif message["type"] == "lifespan.shutdown":
+                    await send({"type": "lifespan.shutdown.complete"})
+                    return
+
+        self.started = True
+
+        async def receive_without_shutdown():
+            message = await receive()
+            # Swallow the shutdown Mangum sends at the end of an invocation so
+            # the session manager stays up for the next request.
+            while message["type"] == "lifespan.shutdown":
+                await send({"type": "lifespan.shutdown.complete"})
+                message = await receive()
+            return message
+
+        return await self.app(scope, receive_without_shutdown, send)
+
+
 try:
     from mangum import Mangum
 
-    # KNOWN ISSUE — see README "AWS deployment" before touching this.
-    #
-    # lifespan="auto" runs the ASGI lifespan on every invocation, and MCP's
-    # StreamableHTTPSessionManager raises "run() can only be called once per
-    # instance" on the second one. First request in a warm container succeeds,
-    # every later request fails — invisible to any test that sends one request.
-    # The fix is to start the lifespan once at cold start; not yet implemented.
-    _asgi = Mangum(_app, lifespan="auto")
+    _asgi = Mangum(RunLifespanOnce(_app), lifespan="auto")
 except ImportError:  # pragma: no cover - only in environments without mangum
     _asgi = None
 
