@@ -108,9 +108,39 @@ _TRANSIENT = (
 )
 
 
+def unwrap(exc: BaseException, _depth: int = 0) -> List[BaseException]:
+    """
+    Every exception inside a failure, including the ones nested out of sight.
+
+    MCP and LangGraph both run tool calls inside anyio task groups, so a
+    RateLimitError arrives wrapped in an ExceptionGroup whose own `str()` is
+    "unhandled errors in a TaskGroup (1 sub-exception)" — the real message is
+    only on the children. Matching on the outer string therefore classified
+    every wrapped failure as unknown: retries never fired, and the deployed demo
+    reported a plain rate limit as a crash.
+
+    Chained causes are followed too, since a wrapped error is often re-raised
+    with the original attached rather than nested.
+    """
+    found = [exc]
+    if _depth > 10:  # cycles are possible via __context__
+        return found
+    for child in getattr(exc, "exceptions", None) or []:
+        found.extend(unwrap(child, _depth + 1))
+    for link in (exc.__cause__, exc.__context__):
+        if link is not None and link is not exc:
+            found.extend(unwrap(link, _depth + 1))
+    return found
+
+
+def describe(exc: BaseException) -> str:
+    """The text of a failure and everything nested inside it, lowercased."""
+    return " ".join(f"{type(e).__name__}: {e}" for e in unwrap(exc)).lower()
+
+
 def is_transient(exc: BaseException) -> bool:
     """Whether a failure is worth retrying with the same input."""
-    return any(marker in str(exc).lower() for marker in _TRANSIENT)
+    return any(marker in describe(exc) for marker in _TRANSIENT)
 
 
 async def ask(agent, question: str, attempts: int = 3) -> str:

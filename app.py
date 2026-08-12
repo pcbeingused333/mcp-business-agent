@@ -70,6 +70,43 @@ def prepare_database() -> str:
     return st.session_state.db_path
 
 
+def explain_failure(exc: BaseException) -> str:
+    """
+    Turn a failure into something a visitor can act on.
+
+    The classification looks at every exception nested inside the failure, not
+    just the outermost one. MCP and LangGraph run tool calls in anyio task
+    groups, so a rate limit reaches this handler as an ExceptionGroup whose own
+    message says nothing about rate limits — matching on `str(exc)` reported a
+    plain "try again in a minute" as an unexplained crash, which is what the
+    deployed demo did before this.
+
+    The type name is rendered as backticked text rather than an HTML tag:
+    st.markdown escapes HTML by default, so a `<sub>` wrapper appeared on screen
+    as literal angle brackets.
+    """
+    from agent.graph import describe
+
+    detail = describe(exc)
+    if "rate limit" in detail or "429" in detail:
+        return (
+            "⚠️ **The model is rate limited right now.** This demo runs on Groq's "
+            "free tier, which has a daily token cap. Try again in a few minutes."
+        )
+    if "api_key" in detail or "authentication" in detail or "401" in detail:
+        return "⚠️ **The Groq API key was rejected.** Check the app's secrets."
+    if "overloaded" in detail or "503" in detail:
+        return "⚠️ **The model is overloaded.** Try again shortly."
+
+    # Show the innermost concrete type: ExceptionGroup on its own tells nobody
+    # anything, including me.
+    from agent.graph import unwrap
+
+    inner = [e for e in unwrap(exc) if not isinstance(e, BaseExceptionGroup)]
+    name = type(inner[-1] if inner else exc).__name__
+    return f"⚠️ **The agent failed to answer.** (`{name}`)"
+
+
 async def answer(question: str):
     """Run one question and return (final answer, [(tool, args, result), …])."""
     from agent.graph import build_agent
@@ -160,21 +197,18 @@ if question:
         with st.spinner("Calling the MCP server…"):
             try:
                 reply, steps = asyncio.run(answer(question))
+                failed = False
             except Exception as exc:  # noqa: BLE001 — the UI never shows a traceback
-                message = str(exc).lower()
-                if "rate limit" in message:
-                    reply = "⚠️ The model is rate limited right now. Try again shortly."
-                elif "api_key" in message or "authentication" in message:
-                    reply = "⚠️ The Groq API key was rejected. Check the app's secrets."
-                else:
-                    reply = f"⚠️ The agent failed to answer.\n\n<sub>{type(exc).__name__}</sub>"
-                steps = []
+                reply, steps, failed = explain_failure(exc), [], True
 
         st.markdown(reply)
         for name, args, result in steps:
             with st.expander(f"🔧 {name}({', '.join(f'{k}={v!r}' for k, v in args.items())})"):
                 st.code(result, language="json")
-        if not steps:
+        # Only meaningful when the agent actually answered. After a failure there
+        # was no trajectory to have, and saying "no tools were called" reads as a
+        # second, invented problem.
+        if not steps and not failed:
             st.caption(
                 "No tools were called for this answer — worth noticing, since "
                 "every question about the business should involve a lookup."

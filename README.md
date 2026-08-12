@@ -193,6 +193,12 @@ makes leaves less room for the next, and after a handful of visits the demo answ
 temp directory fixes that, and removes any assumption that the deploy's working
 directory is writable.
 
+Failures are unwrapped before they are classified. MCP and LangGraph run tool calls
+inside anyio task groups, so a rate limit arrives as an `ExceptionGroup` whose own
+message says nothing about rate limits — matching on the outer `str(exc)` showed a
+plain "try again shortly" as an unexplained crash on the live demo, and stopped the
+retry logic from firing at all. Both now walk the whole tree.
+
 Before deploying, the app is booted from a **clean install of `requirements.txt`
 alone** and executed headlessly with Streamlit's `AppTest` — "the server starts" is
 not the same as "the script runs", and a missing dependency shows up on the first
@@ -257,7 +263,7 @@ evals/
   score.py      Applying a scenario's expectations to a run
   run_eval.py   The runner
 app.py          Streamlit demo, tool trajectory shown per answer
-tests/          116 tests, no network and no LLM required
+tests/          126 tests, no network and no LLM required
 ```
 
 `ops` has no MCP import and `rules` has no database import. The decision to accept an
@@ -272,7 +278,7 @@ one failed; `test_a_refused_booking_leaves_no_order_behind` guards it.
 ## Tests
 
 ```bash
-pytest -q      # 116 tests, ~2.5s
+pytest -q      # 126 tests, ~2.5s
 ```
 
 No API key, no network, no running server. Tool tests go through

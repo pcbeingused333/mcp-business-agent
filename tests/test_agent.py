@@ -221,3 +221,54 @@ def test_date_carrying_tools_return_the_weekday(tools):
 def test_suggested_alternative_days_carry_their_weekday_too(tools):
     result = tools("check_availability", day=next_weekday(MONDAY, after_days=1))
     assert all("weekday" in day for day in result["next_open_days"])
+
+
+# ---- failures arrive wrapped ----
+
+def test_unwrap_finds_an_exception_nested_in_a_group():
+    """
+    MCP and LangGraph run tool calls inside anyio task groups.
+
+    The real error is a child of the group; the group's own message is
+    "unhandled errors in a TaskGroup", which names nothing.
+    """
+    inner = ValueError("Rate limit reached for model")
+    group = BaseExceptionGroup("unhandled errors in a TaskGroup", [inner])
+    assert inner in graph.unwrap(group)
+
+
+def test_unwrap_follows_chained_causes():
+    try:
+        try:
+            raise ValueError("rate limit")
+        except ValueError as cause:
+            raise RuntimeError("wrapped") from cause
+    except RuntimeError as exc:
+        assert any("rate limit" in str(e) for e in graph.unwrap(exc))
+
+
+def test_unwrap_survives_a_self_referential_chain():
+    exc = RuntimeError("boom")
+    exc.__context__ = exc
+    assert graph.unwrap(exc)  # terminates rather than recursing forever
+
+
+def test_a_wrapped_rate_limit_is_still_treated_as_transient():
+    """
+    Regression from the deployed demo.
+
+    Matching on str(exc) of the outer group classified every wrapped failure as
+    permanent, so the retry never fired and the UI reported a plain rate limit
+    as an unexplained crash.
+    """
+    group = BaseExceptionGroup(
+        "unhandled errors in a TaskGroup", [Exception("Rate limit reached")]
+    )
+    assert graph.is_transient(group)
+
+
+def test_a_wrapped_auth_error_is_still_permanent():
+    group = BaseExceptionGroup(
+        "unhandled errors in a TaskGroup", [Exception("invalid api_key")]
+    )
+    assert not graph.is_transient(group)
