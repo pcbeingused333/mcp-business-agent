@@ -5,3 +5,9 @@ ops.db
 .pytest_cache/
 .env
 .streamlit/secrets.toml
+
+# Terraform. The lock file is committed on purpose — it pins provider versions.
+.terraform/
+*.tfstate
+*.tfstate.*
+
