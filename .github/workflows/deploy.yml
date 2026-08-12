@@ -1,0 +1,103 @@
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  # One deploy at a time. Two overlapping runs would race on which image the
+  # function ends up pinned to, and the loser wins silently.
+  group: deploy
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  FUNCTION: mcp-business-agent
+  ECR_REPOSITORY: mcp-business-agent
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements-dev.txt
+
+      # Against moto, so no AWS credentials and nothing billable. This gate is
+      # what makes deploying on every push to main defensible.
+      #
+      # -rs prints the reason for anything skipped. tests/test_lambda.py guards
+      # its imports with importorskip, so a missing dependency would skip the
+      # handler suite rather than fail it — a green run that never touched the
+      # deployed entry point. Skips are visible in the log for that reason.
+      - run: pytest -q -rs
+
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+
+    permissions:
+      # Required for OIDC: lets the job request a signed identity token. There
+      # is no long-lived AWS key in this repository.
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          IMAGE="$REGISTRY/$ECR_REPOSITORY:${GITHUB_SHA::7}"
+          # --provenance/--sbom off: BuildKit otherwise pushes an OCI image
+          # index to carry its attestations, and Lambda accepts only a single
+          # Docker v2 manifest. It fails at deploy with a media type error that
+          # points at the base image rather than at the attestations.
+          docker build --platform linux/amd64 --provenance=false --sbom=false \
+            -t "$IMAGE" .
+          docker push "$IMAGE"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: Point the function at it
+        run: |
+          aws lambda update-function-code \
+            --function-name "$FUNCTION" --image-uri "$IMAGE" >/dev/null
+          # Without this the smoke test races the update and passes against the
+          # previous image.
+          aws lambda wait function-updated-v2 --function-name "$FUNCTION"
+
+      - name: Smoke test
+        run: |
+          URL="$(aws lambda get-function-url-config \
+            --function-name "$FUNCTION" --query FunctionUrl --output text)"
+          ENDPOINT="${URL%/}/mcp"
+
+          # Three requests, not one. Mangum re-runs the ASGI lifespan on every
+          # invocation and MCP's session manager refuses to start twice, so this
+          # class of bug only shows from the second request into a warm
+          # container — a single-request check passes while it is live.
+          for i in 1 2 3; do
+            code=$(curl -s -o body.json -w '%{http_code}' -X POST "$ENDPOINT" \
+              -H 'Content-Type: application/json' \
+              -H 'Accept: application/json, text/event-stream' \
+              -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}')
+            tools=$(jq '.result.tools | length' body.json)
+            echo "request $i: HTTP $code, $tools tools"
+            [ "$code" = 200 ] && [ "$tools" -gt 0 ] || { cat body.json; exit 1; }
+          done

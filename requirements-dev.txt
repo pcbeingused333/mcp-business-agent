@@ -1,4 +1,10 @@
 -r requirements.txt
+
+# The Lambda runtime dependencies too. tests/test_lambda.py guards its imports
+# with pytest.importorskip, so without mangum here the handler tests do not
+# fail — they are silently skipped, and CI goes green having never exercised
+# the deployed entry point at all.
+-r requirements-lambda.txt
+
 pytest
-boto3
 moto[dynamodb]
