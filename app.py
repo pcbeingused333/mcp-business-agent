@@ -13,6 +13,7 @@ opens it.
 """
 import asyncio
 import os
+import tempfile
 
 import streamlit as st
 
@@ -44,12 +45,29 @@ SUGGESTIONS = [
 ]
 
 
-@st.cache_resource(show_spinner="Preparing the demo database…")
 def prepare_database() -> str:
-    store.initialise()
-    if not store.list_products():
-        store.seed()
-    return store.DEFAULT_DB
+    """
+    A fresh, private database per visitor.
+
+    `place_order` permanently consumes a day's capacity. On one shared database
+    every booking a visitor makes leaves less room for the next, and after a
+    handful of visits the demo answers "no availability" to everything and looks
+    broken — the exact failure this project keeps warning about.
+
+    A per-session file in the system temp directory fixes that and, incidentally,
+    removes any assumption that the deploy's working directory is writable.
+    Sessions are cleaned up by the OS; the file is a few tens of KB.
+    """
+    if "db_path" not in st.session_state:
+        handle = tempfile.NamedTemporaryFile(prefix="ops-demo-", suffix=".db", delete=False)
+        handle.close()
+        st.session_state.db_path = handle.name
+        store.DEFAULT_DB = handle.name
+        store.seed(db_path=handle.name)
+    # Rebind on every rerun: Streamlit re-executes this module per interaction,
+    # and the module-level default would otherwise point at the repo directory.
+    store.DEFAULT_DB = st.session_state.db_path
+    return st.session_state.db_path
 
 
 async def answer(question: str):
@@ -78,6 +96,10 @@ st.title("🥨 Business Operations Agent")
 st.caption(
     "A LangGraph agent that can only act through an MCP server. "
     "Every tool call it makes is shown below the answer."
+)
+st.caption(
+    "Your session gets its own copy of the business, so bookings you make here "
+    "do not affect anyone else's demo."
 )
 
 with st.sidebar:

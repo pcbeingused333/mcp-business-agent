@@ -182,9 +182,21 @@ The agent with its tool trajectory rendered next to every answer — which tools
 reached for, with what arguments, and what came back. A chat window that answers
 correctly proves nothing about an agent; the trajectory is the demonstration.
 
-Self-contained on purpose: SQLite seeded on first boot, no external database, no
-embedding model, one API key. A demo whose database can pause is a demo that is dead
-exactly when someone opens it.
+Self-contained on purpose: SQLite, no external database, no embedding model, one API
+key. A demo whose database can pause is a demo that is dead exactly when someone
+opens it.
+
+**Each visitor gets their own copy of the business.** `place_order` permanently
+consumes a day's capacity, so on a single shared database every booking a visitor
+makes leaves less room for the next, and after a handful of visits the demo answers
+"no availability" to everything and looks broken. A per-session SQLite file in the
+temp directory fixes that, and removes any assumption that the deploy's working
+directory is writable.
+
+Before deploying, the app is booted from a **clean install of `requirements.txt`
+alone** and executed headlessly with Streamlit's `AppTest` — "the server starts" is
+not the same as "the script runs", and a missing dependency shows up on the first
+browser connection, which is exactly when someone is looking.
 
 To deploy on Streamlit Community Cloud, point it at `app.py` and set one secret:
 
@@ -245,7 +257,7 @@ evals/
   score.py      Applying a scenario's expectations to a run
   run_eval.py   The runner
 app.py          Streamlit demo, tool trajectory shown per answer
-tests/          111 tests, no network and no LLM required
+tests/          116 tests, no network and no LLM required
 ```
 
 `ops` has no MCP import and `rules` has no database import. The decision to accept an
@@ -260,7 +272,7 @@ one failed; `test_a_refused_booking_leaves_no_order_behind` guards it.
 ## Tests
 
 ```bash
-pytest -q      # 111 tests, ~1.5s
+pytest -q      # 116 tests, ~2.5s
 ```
 
 No API key, no network, no running server. Tool tests go through
@@ -273,7 +285,6 @@ called directly and fails over the protocol is still broken.
 - Confirm the no-lookup fix behaviourally (blocked on the Groq daily token cap)
 - More scenarios around multi-turn bookings, where the agent has to carry a quote
   across turns before writing
-- Deploy the demo
 
 ## Licence
 
