@@ -1,2 +1,4 @@
 -r requirements.txt
 pytest
+boto3
+moto[dynamodb]
