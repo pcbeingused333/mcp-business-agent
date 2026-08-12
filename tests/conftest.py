@@ -31,11 +31,27 @@ def next_weekday(weekday: int, *, after_days: int = 0, start: date = FROZEN_TODA
     return day.isoformat()
 
 
+@pytest.fixture(autouse=True)
+def _isolate_store():
+    """
+    Never let one test's store leak into the next.
+
+    `ops.store` keeps a process-wide current store so Lambda can set it once per
+    container. In a test session that global is shared state: without this,
+    whichever test ran first pinned the store to its own file and every later
+    test silently read the wrong database.
+    """
+    store.reset()
+    yield
+    store.reset()
+
+
 @pytest.fixture
 def db(tmp_path, monkeypatch):
-    """A seeded database, isolated per test."""
+    """A seeded database, isolated per test, installed as the current store."""
     path = str(tmp_path / "ops.db")
     monkeypatch.setattr(store, "DEFAULT_DB", path)
+    store.use(store.SqliteStore(path))
     store.seed(db_path=path, today=FROZEN_TODAY, days=60)
     return path
 
