@@ -1,0 +1,9 @@
+# Runtime dependencies for the Lambda container only.
+#
+# Deliberately not requirements.txt: the Streamlit demo needs streamlit,
+# langgraph and langchain-groq, none of which the MCP server itself uses. A
+# Lambda image carrying them would be several hundred MB larger for no reason,
+# and image size is cold-start latency.
+mcp==2.0.0
+mangum
+boto3
