@@ -12,7 +12,18 @@ its clients.
 A LangGraph agent ships with it as one client, so you can see the tools drive a real
 multi-step conversation.
 
-> Status: server, rules, agent, trajectory evals, and a Streamlit demo are done.
+**It is live.** The server runs on AWS Lambda behind a public Function URL, so you
+can call it without cloning anything:
+
+```bash
+curl -s -X POST https://w2f7mj2jcbr3jberiepx2iu2nu0xpgcm.lambda-url.us-east-1.on.aws/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+Point an MCP client at that URL and the six tools show up. See
+[Deployed on AWS](#deployed-on-aws) for how it gets there.
 
 ## Quick start
 
@@ -249,10 +260,14 @@ model has something to display and something to compute with.
 
 ```
 server.py       MCP adapter — tool definitions and argument handling, nothing else
+lambda_handler.py  AWS entry point: the same server behind a Function URL
 ops/
-  store.py      SQLite: catalog, stock, per-day capacity, orders
+  store.py      The storage interface and the process-wide active backend
   rules.py      Booking rules and quote maths — pure functions, no I/O, no clock
   money.py      Integer-cent arithmetic
+  backends/
+    sqlite.py   Local and demo: a file, or one per visitor session
+    dynamo.py   Deployed: one single-table design, PK/SK
 agent/
   bridge.py     MCP tools -> LangChain tools (see "Not langchain-mcp-adapters")
   graph.py      The ReAct agent and its operating instructions
@@ -262,8 +277,9 @@ evals/
   trajectory.py Scoring — pure functions, no LLM, no network
   score.py      Applying a scenario's expectations to a run
   run_eval.py   The runner
+infra/          Terraform for the AWS deployment, and deploy.sh
 app.py          Streamlit demo, tool trajectory shown per answer
-tests/          126 tests, no network and no LLM required
+tests/          157 tests, no network and no LLM required
 ```
 
 `ops` has no MCP import and `rules` has no database import. The decision to accept an
@@ -275,10 +291,113 @@ which writes the order and consumes the day's capacity **in a single transaction
 Two separate writes would let the business double-book a Saturday whenever the second
 one failed; `test_a_refused_booking_leaves_no_order_behind` guards it.
 
+## Deployed on AWS
+
+The server runs behind a public Lambda Function URL, so it is a **remote MCP
+server** — a URL a client connects to, not a repo someone has to clone and run.
+
+```
+                 push to main
+                      │
+              ┌───────▼────────┐
+              │ GitHub Actions │  pytest (moto) ─── gate
+              │   OIDC, no key │  docker build ── push ── update code ── smoke test
+              └───────┬────────┘
+                      │ short-lived credentials, refs/heads/main only
+   ══════════════════ │ ═══════════════════════ AWS ══════════════════════
+                      ▼
+   MCP client ──► Function URL ──► Lambda (container, 512 MB)
+   (Claude Desktop,   auth NONE      lambda_handler.py
+    curl, the agent)                   │  Mangum ── ASGI ── MCP streamable HTTP
+                                       │  stateless, JSON responses
+                                       ▼
+                                  DynamoDB  business-ops
+                                  on-demand, PK/SK single table
+                                       ▲
+                                       │
+                                  CloudWatch Logs (14-day retention)
+
+   ECR  mcp-business-agent   ── lifecycle: 3 images, untagged expire in a day
+```
+
+`ops.store` is an interface with two backends, so nothing above it changes
+between the SQLite demo and the deployed table. `rules.py` does not know either
+exists.
+
+### Deploying
+
+```bash
+cd infra
+./deploy.sh          # build, push, apply, smoke test
+./deploy.sh --seed   # ...and repopulate the business (destructive)
+```
+
+Two ordering constraints shape that script, and neither is obvious from the
+Terraform alone.
+
+A container-image Lambda cannot be created before the image exists, and the
+image cannot be pushed before the registry does — so the registry is applied on
+its own first. Then the Function URL's hostname is only known after the function
+exists, and the function needs that hostname in `ALLOWED_HOSTS` or MCP's DNS
+rebinding protection answers every request with 421. A resource cannot depend on
+an attribute of something that depends on it, so the final apply feeds this
+configuration's own output back in as a variable. Terraform still owns the
+value, and there is nothing out-of-band for a later apply to revert.
+
+`ALLOWED_HOSTS` unset means the transport rejects everything rather than
+accepting any Host, so a half-finished deploy fails closed.
+
+### What only the real deploy could catch
+
+The image was run under the AWS Runtime Interface Emulator against the real
+table before any of this — which the 157 tests against moto cannot do. It proved
+the image starts, the handler works under the actual runtime, and boto3 reaches
+DynamoDB.
+
+It still was not enough. `CreateFunction` failed with *"The image manifest,
+config or layer media type for the source image ... is not supported"*, which
+reads like a base image problem and is not one. Recent BuildKit attaches
+provenance and SBOM attestations by default, and to carry them it pushes an OCI
+image index rather than a plain manifest; Lambda accepts only a single Docker v2
+manifest. `--provenance=false --sbom=false` fixes it. Every pre-deploy check
+passes while it is broken, because the fault is in what the registry stores, not
+in the image.
+
+### CI/CD
+
+Push to `main` runs the suite, builds, pushes, updates the function and smoke
+tests it. Authentication is OIDC — GitHub presents a signed token naming the
+repository and ref, AWS returns short-lived credentials, and there is no access
+key in repository secrets.
+
+The trust policy names `refs/heads/main` rather than `repo:owner/name:*`. The
+wildcard also matches `pull_request` runs, and a pull request can come from a
+fork, so the broad form lets anyone on GitHub open a PR that assumes the deploy
+role.
+
+The role also **cannot run `terraform apply`**. Applying this configuration
+creates IAM roles, and a role that can create roles can grant itself anything —
+not a capability to hand a public repository's OIDC trust. It can push an image
+and repoint the function; infrastructure changes are applied from a workstation.
+
+The smoke test sends three requests, not one, for the same reason the test suite
+does: Mangum re-runs the ASGI lifespan on every invocation and MCP's session
+manager refuses to start twice, so that failure only appears from the second
+request into a warm container.
+
+### Cost
+
+Free tier covers it: a million Lambda requests a month, 25 GB of DynamoDB. The
+only real exposure is ECR storage beyond the first 500 MB and CloudWatch logs
+kept forever, so the lifecycle policy holds three images and log retention is 14
+days. A $5 budget alarm is the backstop, and the Function URL is unauthenticated
+by design — the seeded business is fictional and disclosable, but the
+invocations are still billable.
+
 ## Tests
 
 ```bash
-pytest -q      # 126 tests, ~2.5s
+pytest -q      # 157 tests, ~6s
 ```
 
 No API key, no network, no running server. Tool tests go through
