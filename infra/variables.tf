@@ -53,9 +53,19 @@ variable "alert_email" {
     leaves the topic in place, so alarms still fire and still have somewhere to
     go once an address is set.
 
-    AWS sends a confirmation link on first apply and the subscription stays
-    pending until it is clicked. Terraform reports success either way, so an
-    unconfirmed address is a silent no-op.
+    **Pass it as TF_VAR_alert_email, not in terraform.tfvars.** Two reasons, and
+    both of them bite silently. That file is committed and this repository is
+    public, so an address written there is published. And deploy.sh regenerates
+    it wholesale (`cat > terraform.tfvars`) to record the Function URL host, so
+    anything else added to it disappears on the next deployment and the alarms
+    quietly stop being delivered.
+
+        export TF_VAR_alert_email='you@example.com'
+        terraform apply
+
+    AWS then sends a confirmation link and the subscription stays *pending*
+    until it is clicked. Terraform reports success either way, so an unconfirmed
+    address is a subscription that exists and delivers nothing.
   EOT
   type        = string
   default     = ""

@@ -67,6 +67,10 @@ echo "==> Second pass: ALLOWED_HOSTS=${HOST}"
 # Recorded so a later bare `terraform apply` — to change a timeout, say — does
 # not fall back to the empty default and take the server down with 421s. The
 # hostname is not a secret; it is the public endpoint.
+# NOTE: this rewrites the file wholesale, so it is not a place to keep settings.
+# Anything added here is gone on the next deploy — see alert_email in
+# variables.tf, which is passed as TF_VAR_alert_email for that reason and
+# because this file is committed to a public repository.
 cat > terraform.tfvars <<EOF
 # Written by deploy.sh. The Function URL's hostname, fed back in from this
 # configuration's own output — see the allowed_hosts variable for why it cannot
