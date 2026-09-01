@@ -272,3 +272,59 @@ def test_a_wrapped_auth_error_is_still_permanent():
         "unhandled errors in a TaskGroup", [Exception("invalid api_key")]
     )
     assert not graph.is_transient(group)
+
+
+# ---- a retired model must not take the demo down with it ----
+
+def test_a_served_model_is_used_unchanged(monkeypatch):
+    monkeypatch.setattr(graph, "_resolved_model", None)
+    monkeypatch.setenv("LLM_MODEL", "openai/gpt-oss-120b")
+    monkeypatch.setattr(graph, "available_models", lambda *a, **k: {"openai/gpt-oss-120b"})
+    assert graph.resolve_model() == "openai/gpt-oss-120b"
+
+
+def test_a_retired_model_falls_back_and_says_so(monkeypatch, capsys):
+    monkeypatch.setattr(graph, "_resolved_model", None)
+    monkeypatch.setenv("LLM_MODEL", "openai/gpt-oss-120b")
+    monkeypatch.setattr(
+        graph, "available_models", lambda *a, **k: {"qwen/qwen3.8-27b", "whisper-large-v3"}
+    )
+    assert graph.resolve_model() == "qwen/qwen3.8-27b"
+    err = capsys.readouterr().err
+    assert "no longer in Groq's catalogue" in err
+    assert "do not describe this model" in err
+
+
+def test_an_unreadable_catalogue_fails_open(monkeypatch, capsys):
+    monkeypatch.setattr(graph, "_resolved_model", None)
+    monkeypatch.setenv("LLM_MODEL", "openai/gpt-oss-120b")
+    monkeypatch.setattr(graph, "available_models", lambda *a, **k: None)
+    assert graph.resolve_model() == "openai/gpt-oss-120b"
+    assert capsys.readouterr().err == ""
+
+
+def test_the_catalogue_is_read_once_per_process(monkeypatch):
+    monkeypatch.setattr(graph, "_resolved_model", None)
+    monkeypatch.setenv("LLM_MODEL", "openai/gpt-oss-120b")
+    calls = []
+    monkeypatch.setattr(
+        graph, "available_models",
+        lambda *a, **k: (calls.append(1), {"openai/gpt-oss-120b"})[1],
+    )
+    graph.resolve_model(); graph.resolve_model()
+    assert len(calls) == 1
+
+
+def test_an_explicit_model_argument_still_wins(monkeypatch):
+    """A caller naming a model — the eval harness does — must not be overridden."""
+    monkeypatch.setattr(graph, "_resolved_model", None)
+    monkeypatch.setattr(graph, "available_models", lambda *a, **k: {"openai/gpt-oss-20b"})
+    assert graph.resolve_model("openai/gpt-oss-20b") == "openai/gpt-oss-20b"
+
+
+def test_the_fallback_chain_holds_nothing_that_cannot_use_tools():
+    """This agent is nothing but tools; a chain with a speech model is a wrong answer."""
+    assert graph.DEFAULT_MODEL not in graph.FALLBACK_MODELS
+    for model in graph.FALLBACK_MODELS:
+        assert not model.startswith("groq/compound")
+        assert not any(bad in model for bad in ("allam", "whisper", "orpheus", "guard"))

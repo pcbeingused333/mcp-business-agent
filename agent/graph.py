@@ -21,6 +21,85 @@ from agent.bridge import load_mcp_tools
 # rate would be total.
 DEFAULT_MODEL = "openai/gpt-oss-120b"
 
+# The RAG project pins the same model, so a retirement takes both public demos
+# down at once, and the discovery path is somebody opening a dead link. That is
+# not hypothetical — llama-3.3-70b-versatile was retired mid-project and the
+# sibling project's probe reported it as a 100% failure rate for a while, because
+# every request was going to a model that no longer existed.
+#
+# Ordered by closeness to the shipped model: its own smaller sibling, then another
+# family. `groq/compound*` are agentic systems rather than chat models and
+# `allam-2-7b` has a 4k context, so neither can stand in for this agent.
+FALLBACK_MODELS = ("openai/gpt-oss-20b", "qwen/qwen3.8-27b", "qwen/qwen3.6-27b")
+
+_resolved_model: Optional[str] = None
+
+
+def available_models(timeout: float = 8.0) -> Optional[set]:
+    """The ids Groq is serving, or None when the catalogue cannot be read.
+
+    None is not an empty set: an unreachable catalogue must never be mistaken for
+    "every model is gone".
+    """
+    import json
+    import urllib.request
+
+    key = os.getenv("GROQ_API_KEY")
+    if not key:
+        return None
+    try:
+        request = urllib.request.Request(
+            "https://api.groq.com/openai/v1/models",
+            headers={"Authorization": f"Bearer {key}"},
+        )
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = json.load(response)
+        return {m["id"] for m in payload.get("data", [])}
+    except Exception:  # noqa: BLE001 — fails open, see resolve_model
+        return None
+
+
+def resolve_model(model: Optional[str] = None, recheck: bool = False) -> str:
+    """The chat model to run on, checked once per process against the catalogue.
+
+    Fails open: if the catalogue cannot be read, the configured model is returned
+    unchanged, because a checker that takes the agent down when the *checker*
+    breaks is worse than the risk it guards against. Loud when it substitutes,
+    because an agent quietly answering on a different model than the one its
+    evaluation numbers describe is the failure this whole project is about.
+    """
+    import sys
+
+    global _resolved_model
+
+    configured = model or os.getenv("LLM_MODEL", DEFAULT_MODEL)
+    if _resolved_model is not None and not recheck:
+        return _resolved_model
+
+    catalogue = available_models()
+    if catalogue is None or configured in catalogue:
+        _resolved_model = configured
+        return configured
+
+    for candidate in FALLBACK_MODELS:
+        if candidate in catalogue:
+            print(
+                f"WARNING: `{configured}` is no longer in Groq's catalogue. Falling "
+                f"back to `{candidate}`. The trajectory evals were measured on "
+                f"`{configured}` and do not describe this model.",
+                file=sys.stderr,
+            )
+            _resolved_model = candidate
+            return candidate
+
+    print(
+        f"WARNING: `{configured}` is gone and no fallback is available. Continuing "
+        "so the failure is the provider's error rather than a silent substitution.",
+        file=sys.stderr,
+    )
+    _resolved_model = configured
+    return configured
+
 
 def build_system_prompt(today: Optional[date] = None) -> str:
     """
@@ -95,9 +174,7 @@ async def build_agent(
     if llm is None:
         from langchain_groq import ChatGroq
 
-        llm = ChatGroq(
-            model=model or os.getenv("LLM_MODEL", DEFAULT_MODEL), temperature=0
-        )
+        llm = ChatGroq(model=resolve_model(model), temperature=0)
 
     return create_react_agent(llm, tools, prompt=build_system_prompt(today))
 
