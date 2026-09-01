@@ -89,6 +89,15 @@ def resolve_model(model: Optional[str] = None, recheck: bool = False) -> str:
                 f"`{configured}` and do not describe this model.",
                 file=sys.stderr,
             )
+            # The warning is for whoever reads the logs; the metric is what an
+            # alarm can watch. A fallback nobody is told about is a slower way of
+            # not knowing.
+            try:
+                from ops import telemetry
+
+                telemetry.record_model_substitution(configured, candidate)
+            except Exception:  # noqa: BLE001 — telemetry must never break the agent
+                pass
             _resolved_model = candidate
             return candidate
 

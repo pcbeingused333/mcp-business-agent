@@ -33,7 +33,7 @@ import os
 logging.getLogger().setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 log = logging.getLogger(__name__)
 
-from ops import store  # noqa: E402
+from ops import store, telemetry  # noqa: E402
 from ops.backends.dynamo import DynamoStore  # noqa: E402
 
 # Once per container, not once per request.
@@ -241,12 +241,19 @@ def handler(event, context):
             "received_keys": sorted((event or {}).keys()),
         }
 
-    return _asgi(event, context)
+    with telemetry.timed_request("mcp") as span:
+        span["path"] = (event.get("rawPath") or event.get("requestContext", {})
+                        .get("http", {}).get("path", ""))
+        span["method"] = (event.get("requestContext", {})
+                          .get("http", {}).get("method", ""))
+        return _asgi(event, context)
 
 
 def health(event, context):
     """Cheap readiness check: proves the table is reachable, not just that Python started."""
     try:
+        telemetry.emit({"HealthChecks": 1}, units={"HealthChecks": "Count"},
+                       dimensions={"Kind": "health"})
         store.current().initialise()
         products = len(store.current().list_products())
         return {"statusCode": 200, "body": json.dumps({"ok": True, "products": products})}

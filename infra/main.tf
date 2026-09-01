@@ -150,6 +150,13 @@ resource "aws_lambda_function" "this" {
       OPS_TABLE     = aws_dynamodb_table.ops.name
       ALLOWED_HOSTS = var.allowed_hosts
       LOG_LEVEL     = "INFO"
+
+      # Metrics are off unless asked for, so running the CLI or the tests
+      # locally does not print EMF blocks into a terminal. Only the deployed
+      # function sets it, and CloudWatch parses the records out of the log
+      # lines the runtime already ships — no API call on the request path.
+      EMIT_METRICS      = "1"
+      METRICS_NAMESPACE = "BusinessOpsMCP"
     }
   }
 

@@ -46,3 +46,28 @@ variable "log_retention_days" {
   type        = number
   default     = 14
 }
+
+variable "alert_email" {
+  description = <<-EOT
+    Where CloudWatch alarms are delivered. Empty disables the subscription and
+    leaves the topic in place, so alarms still fire and still have somewhere to
+    go once an address is set.
+
+    AWS sends a confirmation link on first apply and the subscription stays
+    pending until it is clicked. Terraform reports success either way, so an
+    unconfirmed address is a silent no-op.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "p99_threshold_ms" {
+  description = <<-EOT
+    p99 latency, in milliseconds, above which the alarm fires. The warm path is
+    a DynamoDB read and a JSON-RPC round trip; the threshold sits well above
+    that so ordinary variance does not page, because an alarm that cries wolf
+    gets muted and a muted alarm is worse than none.
+  EOT
+  type        = number
+  default     = 3000
+}
