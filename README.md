@@ -279,7 +279,7 @@ evals/
   run_eval.py   The runner
 infra/          Terraform for the AWS deployment, and deploy.sh
 app.py          Streamlit demo, tool trajectory shown per answer
-tests/          161 tests, no network and no LLM required
+tests/          178 tests, no network and no LLM required
 ```
 
 `ops` has no MCP import and `rules` has no database import. The decision to accept an
@@ -358,7 +358,7 @@ accepting any Host, so a half-finished deploy fails closed.
 ### What only the real deploy could catch
 
 The image was run under the AWS Runtime Interface Emulator against the real
-table before any of this — which the 161 tests against moto cannot do. It proved
+table before any of this — which the 178 tests against moto cannot do. It proved
 the image starts, the handler works under the actual runtime, and boto3 reaches
 DynamoDB.
 
@@ -413,7 +413,7 @@ invocations are still billable.
 ## Tests
 
 ```bash
-pytest -q      # 161 tests, ~7s
+pytest -q      # 178 tests, ~7s
 ```
 
 No API key, no network, no running server. Tool tests go through
